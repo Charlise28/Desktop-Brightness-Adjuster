@@ -71,7 +71,7 @@ private const uint VK_NEXT = 0x28;  // Down Arrow
 
 ## Building from Source
 
-No Visual Studio required! You can compile the executable in 1 second using native Windows `.NET Framework`:
+You can compile the executable in 1 second using native Windows `.NET Framework`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build_brightness_app.ps1

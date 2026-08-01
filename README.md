@@ -86,5 +86,4 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:winexe /out:Desk
 
 ## Author
 
-Developed by **[Charlise28](https://github.com/Charlise28)**  
-*Computer Engineering Student at University of San Carlos (USC), Philippines.*
+Developed by **[Charlise28](https://github.com/Charlise28)** 

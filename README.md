@@ -13,9 +13,6 @@ An ultra-lightweight, zero-latency desktop brightness controller for Windows 11 
 
 - **0ms Latency**: Instant response via dual-layer architecture — seamless UI overlay combined with background DDC/CI hardware I2C synchronization.
 - **1% Fine Increments**: Fine-grained brightness adjustments for precise light tuning.
-- **Ultra-Minimalist Center OSD**: Sleek matte-black pill badge HUD showing exact brightness percentage.
-- **True Multi-Monitor and OLED Screen Dimmer**: Seamless click-through dark overlay that works on hardware monitors and laptop screens alike.
-- **Low Startup Impact (< 1ms CPU)**: Deferred hardware initialization ensures Windows boots in milliseconds without background bloat.
 - **Single-File C# / Zero External Dependencies**: Compiles out-of-the-box using standard Windows `.NET csc.exe`.
 
 ---

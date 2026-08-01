@@ -1,6 +1,6 @@
 # Desktop Brightness Adjuster
 
-An ultra-lightweight, zero-latency desktop brightness controller for Windows 11 and 10. Designed for hardware enthusiasts, OLED display users, and minimalism purists.
+An ultra-lightweight, zero-latency desktop brightness controller for Windows 11 and 10.
 
 ![Language](https://img.shields.io/badge/Language-C%23-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6.svg)

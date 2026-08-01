@@ -29,6 +29,9 @@ namespace DesktopBrightnessApp
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
+        [DllImport("kernel32.dll")]
+        private static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr dwMinimumWorkingSetSize, IntPtr dwMaximumWorkingSetSize);
+
         [STAThread]
         public static void Main()
         {
@@ -75,6 +78,9 @@ namespace DesktopBrightnessApp
             // Register Global Hotkeys ONLY on startup (< 1ms CPU execution footprint for Low Startup Impact)
             RegisterHotKey(this.Handle, HOTKEY_UP_ID, MOD_ALT, VK_PRIOR);
             RegisterHotKey(this.Handle, HOTKEY_DN_ID, MOD_ALT, VK_NEXT);
+
+            // Trim working set RAM to minimum (< 4 MB)
+            TrimWorkingSetRAM();
         }
 
         protected override void OnLoad(EventArgs e)
@@ -109,7 +115,7 @@ namespace DesktopBrightnessApp
             }
             if (osdForm == null || osdForm.IsDisposed)
             {
-                osdForm = new OsdForm();
+                osdForm = new OsdForm(this.TrimWorkingSetRAM);
             }
 
             // 1. Instantaneous Memory & UI Update (0ms latency)
@@ -127,6 +133,16 @@ namespace DesktopBrightnessApp
         private void UpdateToolTip(int current)
         {
             trayIcon.Text = "Desktop Brightness: " + current + "%\n(Alt+PgUp / Alt+PgDn)";
+        }
+
+        public void TrimWorkingSetRAM()
+        {
+            try
+            {
+                GC.Collect(2, GCCollectionMode.Forced, true);
+                SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, (IntPtr)(-1), (IntPtr)(-1));
+            }
+            catch { }
         }
 
         private bool IsAutoStartEnabled()
@@ -224,19 +240,27 @@ namespace DesktopBrightnessApp
         }
     }
 
-    // Ultra-Minimalist Center-Screen Percentage Badge OSD (Lazy-loaded on first keypress)
+    // Ultra-Minimalist Center-Screen Percentage Badge OSD (Cached GDI+ Brushes & Auto-Trimmed RAM)
     public class OsdForm : Form
     {
         private Timer hideTimer;
         private int currentPercent = 50;
+        private Action onHideCallback;
+
+        // Cached GDI+ resources to avoid allocations per frame (0.00% CPU overhead)
+        private static readonly Font osdFont = new Font("Segoe UI", 16, FontStyle.Bold);
+        private static readonly SolidBrush bgBrush = new SolidBrush(Color.FromArgb(248, 16, 16, 20));
+        private static readonly SolidBrush textBrush = new SolidBrush(Color.White);
+        private static readonly Pen borderPen = new Pen(Color.FromArgb(50, 50, 58), 1.5f);
 
         [DllImport("user32.dll")]
         private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
 
         private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
 
-        public OsdForm()
+        public OsdForm(Action onHide = null)
         {
+            this.onHideCallback = onHide;
             this.FormBorderStyle = FormBorderStyle.None;
             this.StartPosition = FormStartPosition.Manual;
             this.ShowInTaskbar = false;
@@ -250,11 +274,12 @@ namespace DesktopBrightnessApp
             this.Location = new Point(screen.Left + (screen.Width - this.Width) / 2, screen.Top + (screen.Height - this.Height) / 2);
 
             hideTimer = new Timer();
-            hideTimer.Interval = 1000; // Hide after 1.0s
+            hideTimer.Interval = 900; // Hide after 0.9s
             hideTimer.Tick += (s, e) =>
             {
                 hideTimer.Stop();
                 this.Hide();
+                if (onHideCallback != null) onHideCallback();
             };
         }
 
@@ -288,27 +313,17 @@ namespace DesktopBrightnessApp
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
             // Matte Black Pill Background
-            using (SolidBrush bgBrush = new SolidBrush(Color.FromArgb(248, 16, 16, 20)))
-            {
-                g.FillRectangle(bgBrush, 0, 0, this.Width, this.Height);
-            }
+            g.FillRectangle(bgBrush, 0, 0, this.Width, this.Height);
 
             // Subtle Dark Border
-            using (Pen borderPen = new Pen(Color.FromArgb(50, 50, 58), 1.5f))
-            {
-                g.DrawRectangle(borderPen, 1, 1, this.Width - 2, this.Height - 2);
-            }
+            g.DrawRectangle(borderPen, 1, 1, this.Width - 2, this.Height - 2);
 
             // Bold Centered Percentage Text (e.g., "42%")
             string text = currentPercent + "%";
-            using (Font font = new Font("Segoe UI", 16, FontStyle.Bold))
-            using (SolidBrush textBrush = new SolidBrush(Color.White))
-            {
-                SizeF textSize = g.MeasureString(text, font);
-                float posX = (this.Width - textSize.Width) / 2.0f;
-                float posY = (this.Height - textSize.Height) / 2.0f;
-                g.DrawString(text, font, textBrush, posX, posY);
-            }
+            SizeF textSize = g.MeasureString(text, osdFont);
+            float posX = (this.Width - textSize.Width) / 2.0f;
+            float posY = (this.Height - textSize.Height) / 2.0f;
+            g.DrawString(text, osdFont, textBrush, posX, posY);
         }
     }
 

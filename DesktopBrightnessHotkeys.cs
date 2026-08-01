@@ -72,23 +72,9 @@ namespace DesktopBrightnessApp
                 Text = "Desktop Brightness: 100%\n(Alt+PgUp / Alt+PgDn)"
             };
 
-            // Initialize Dimmer Overlay & OSD
-            dimmerOverlay = new DimmerOverlayForm();
-            osdForm = new OsdForm();
-
-            // Initial Fast Sync (Memory Overlay 0ms)
-            dimmerOverlay.UpdateBrightness(BrightnessController.CurrentBrightness);
-
-            // Register Global Hotkeys (Alt + PageUp, Alt + PageDown)
+            // Register Global Hotkeys ONLY on startup (< 1ms CPU execution footprint for Low Startup Impact)
             RegisterHotKey(this.Handle, HOTKEY_UP_ID, MOD_ALT, VK_PRIOR);
             RegisterHotKey(this.Handle, HOTKEY_DN_ID, MOD_ALT, VK_NEXT);
-
-            // Defer DDC/CI Hardware I2C query by 4s for Low Startup Impact (< 1ms CPU)
-            Task.Run(async () =>
-            {
-                await Task.Delay(4000);
-                BrightnessController.SyncHardwareAsync(BrightnessController.CurrentBrightness);
-            });
         }
 
         protected override void OnLoad(EventArgs e)
@@ -116,6 +102,16 @@ namespace DesktopBrightnessApp
 
         private void AdjustBrightness(int delta)
         {
+            // Lazy initialization on first hotkey press (0ms boot impact)
+            if (dimmerOverlay == null || dimmerOverlay.IsDisposed)
+            {
+                dimmerOverlay = new DimmerOverlayForm();
+            }
+            if (osdForm == null || osdForm.IsDisposed)
+            {
+                osdForm = new OsdForm();
+            }
+
             // 1. Instantaneous Memory & UI Update (0ms latency)
             int newBrightness = BrightnessController.AdjustInMemory(delta);
 
@@ -171,12 +167,13 @@ namespace DesktopBrightnessApp
             UnregisterHotKey(this.Handle, HOTKEY_UP_ID);
             UnregisterHotKey(this.Handle, HOTKEY_DN_ID);
             trayIcon.Visible = false;
-            dimmerOverlay.Close();
+            if (dimmerOverlay != null && !dimmerOverlay.IsDisposed) dimmerOverlay.Close();
+            if (osdForm != null && !osdForm.IsDisposed) osdForm.Close();
             Application.Exit();
         }
     }
 
-    // Click-Through Transparent Black Screen Dimmer Overlay (EXCLUDED from Screen Capture & Screenshots)
+    // Click-Through Transparent Black Screen Dimmer Overlay (Lazy-loaded on first keypress)
     public class DimmerOverlayForm : Form
     {
         private const int WS_EX_TRANSPARENT = 0x20;
@@ -184,11 +181,9 @@ namespace DesktopBrightnessApp
         private const int WS_EX_NOACTIVATE = 0x08000000;
         private const int WS_EX_TOPMOST = 0x8;
 
-        // Win32 API to exclude overlay from screenshots, screen sharing (Discord/Teams/OBS), and Snipping Tool
         [DllImport("user32.dll")]
         private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
 
-        private const uint WDA_NONE = 0x00000000;
         private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
 
         public DimmerOverlayForm()
@@ -229,7 +224,7 @@ namespace DesktopBrightnessApp
         }
     }
 
-    // Ultra-Minimalist Center-Screen Percentage Badge OSD (EXCLUDED from Screen Capture & Screenshots)
+    // Ultra-Minimalist Center-Screen Percentage Badge OSD (Lazy-loaded on first keypress)
     public class OsdForm : Form
     {
         private Timer hideTimer;

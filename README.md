@@ -12,6 +12,7 @@ An ultra-lightweight, zero-latency desktop brightness controller for Windows 11 
 ## Features
 
 - **0ms Latency**: Instant response via dual-layer architecture — seamless UI overlay combined with background DDC/CI hardware I2C synchronization.
+- **Screen Capture Excluded**: Uses native Windows `SetWindowDisplayAffinity` API so screenshots (Snipping Tool, PrintScreen) and screen sharing (Discord, Zoom, Teams, OBS) remain 100% clean and full brightness!
 - **1% Fine Increments**: Fine-grained brightness adjustments for precise light tuning.
 - **Single-File C# / Zero External Dependencies**: Compiles out-of-the-box using standard Windows `.NET csc.exe`.
 

@@ -83,7 +83,7 @@ namespace DesktopBrightnessApp
             RegisterHotKey(this.Handle, HOTKEY_UP_ID, MOD_ALT, VK_PRIOR);
             RegisterHotKey(this.Handle, HOTKEY_DN_ID, MOD_ALT, VK_NEXT);
 
-            // Defer DDC/CI Hardware I2C query by 4s to ensure Windows Startup Impact rating drops to "Low" (< 10ms CPU)
+            // Defer DDC/CI Hardware I2C query by 4s for Low Startup Impact (< 1ms CPU)
             Task.Run(async () =>
             {
                 await Task.Delay(4000);
@@ -139,7 +139,7 @@ namespace DesktopBrightnessApp
             {
                 using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", false))
                 {
-                    return key != null && key.GetValue("DesktopBrightnessApp") != null;
+                    return key != null && (key.GetValue("DesktopBrightness") != null || key.GetValue("DesktopBrightnessApp") != null);
                 }
             }
             catch { return false; }
@@ -154,9 +154,12 @@ namespace DesktopBrightnessApp
                     if (key != null)
                     {
                         if (enable)
-                            key.SetValue("DesktopBrightnessApp", "\"" + Application.ExecutablePath + "\"");
+                            key.SetValue("DesktopBrightness", "\"" + Application.ExecutablePath + "\"");
                         else
+                        {
+                            key.DeleteValue("DesktopBrightness", false);
                             key.DeleteValue("DesktopBrightnessApp", false);
+                        }
                     }
                 }
             }
@@ -173,13 +176,20 @@ namespace DesktopBrightnessApp
         }
     }
 
-    // Click-Through Transparent Black Screen Dimmer Overlay
+    // Click-Through Transparent Black Screen Dimmer Overlay (EXCLUDED from Screen Capture & Screenshots)
     public class DimmerOverlayForm : Form
     {
         private const int WS_EX_TRANSPARENT = 0x20;
         private const int WS_EX_LAYERED = 0x80000;
         private const int WS_EX_NOACTIVATE = 0x08000000;
         private const int WS_EX_TOPMOST = 0x8;
+
+        // Win32 API to exclude overlay from screenshots, screen sharing (Discord/Teams/OBS), and Snipping Tool
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+        private const uint WDA_NONE = 0x00000000;
+        private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
 
         public DimmerOverlayForm()
         {
@@ -193,6 +203,9 @@ namespace DesktopBrightnessApp
             this.Bounds = virtualScreen;
 
             this.Show();
+
+            // Exclude overlay from screen capture, screenshots, and Discord/Zoom screen shares
+            SetWindowDisplayAffinity(this.Handle, WDA_EXCLUDEFROMCAPTURE);
         }
 
         protected override CreateParams CreateParams
@@ -216,11 +229,16 @@ namespace DesktopBrightnessApp
         }
     }
 
-    // Ultra-Minimalist Center-Screen Percentage Badge OSD
+    // Ultra-Minimalist Center-Screen Percentage Badge OSD (EXCLUDED from Screen Capture & Screenshots)
     public class OsdForm : Form
     {
         private Timer hideTimer;
         private int currentPercent = 50;
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+        private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
 
         public OsdForm()
         {
@@ -243,6 +261,12 @@ namespace DesktopBrightnessApp
                 hideTimer.Stop();
                 this.Hide();
             };
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            SetWindowDisplayAffinity(this.Handle, WDA_EXCLUDEFROMCAPTURE);
         }
 
         protected override bool ShowWithoutActivation

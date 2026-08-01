@@ -1,6 +1,6 @@
-# Desktop Brightness Adjuster 🔅⚡
+# Desktop Brightness Adjuster
 
-An ultra-lightweight, zero-latency desktop brightness controller for Windows 11 / 10. Designed for hardware enthusiasts, OLED display users, and minimalism purists.
+An ultra-lightweight, zero-latency desktop brightness controller for Windows 11 and 10. Designed for hardware enthusiasts, OLED display users, and minimalism purists.
 
 ![Language](https://img.shields.io/badge/Language-C%23-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6.svg)
@@ -9,18 +9,18 @@ An ultra-lightweight, zero-latency desktop brightness controller for Windows 11 
 
 ---
 
-## 🔥 Features
+## Features
 
-- **⚡ 0ms Latency**: Instant response via dual-layer architecture — seamless UI overlay combined with background DDC/CI hardware I2C synchronization.
-- **🎯 1% Fine Increments**: Fine-grained brightness adjustments for perfect light tuning.
-- **🖤 Ultra-Minimalist Center OSD**: Sleek matte-black pill badge HUD showing exact brightness percentage.
-- **🖥️ True Multi-Monitor & OLED Screen Dimmer**: Seamless click-through dark overlay that works on hardware monitors and laptop screens alike.
-- **🚀 Low Startup Impact (< 1ms CPU)**: Deferred hardware initialization ensures Windows boots in milliseconds without background bloat.
-- **📦 Single-File C# / Zero External Dependencies**: Compiles out-of-the-box using standard Windows `.NET csc.exe`.
+- **0ms Latency**: Instant response via dual-layer architecture — seamless UI overlay combined with background DDC/CI hardware I2C synchronization.
+- **1% Fine Increments**: Fine-grained brightness adjustments for precise light tuning.
+- **Ultra-Minimalist Center OSD**: Sleek matte-black pill badge HUD showing exact brightness percentage.
+- **True Multi-Monitor and OLED Screen Dimmer**: Seamless click-through dark overlay that works on hardware monitors and laptop screens alike.
+- **Low Startup Impact (< 1ms CPU)**: Deferred hardware initialization ensures Windows boots in milliseconds without background bloat.
+- **Single-File C# / Zero External Dependencies**: Compiles out-of-the-box using standard Windows `.NET csc.exe`.
 
 ---
 
-## ⌨️ Default Hotkeys
+## Default Hotkeys
 
 | Action | Hotkey |
 | :--- | :--- |
@@ -29,12 +29,12 @@ An ultra-lightweight, zero-latency desktop brightness controller for Windows 11 
 
 ---
 
-## ⚙️ How to Customize Your Own Hotkeys
+## How to Customize Your Own Hotkeys
 
 You can easily change the hotkey combination to whatever suits your setup (e.g., `Ctrl` + `Up/Down`, `Shift` + `F11/F12`, etc.).
 
 ### 1. Open `DesktopBrightnessHotkeys.cs` in any text editor.
-### 2. Locate lines 22–24:
+### 2. Locate lines 22-24:
 ```csharp
 private const uint MOD_ALT = 0x0001;
 private const uint VK_PRIOR = 0x21; // Page Up
@@ -43,7 +43,7 @@ private const uint VK_NEXT = 0x22;  // Page Down
 
 ### 3. Replace the Modifier & Key values:
 
-#### 🔹 Modifier Keys (`fsModifiers`):
+#### Modifier Keys (`fsModifiers`):
 | Modifier | Hex Code |
 | :--- | :--- |
 | `Alt` | `0x0001` |
@@ -52,7 +52,7 @@ private const uint VK_NEXT = 0x22;  // Page Down
 | `Win Key` | `0x0008` |
 | `Ctrl + Alt` | `0x0003` |
 
-#### 🔹 Popular Virtual-Key Codes (`vk`):
+#### Popular Virtual-Key Codes (`vk`):
 | Key | Hex Code | Key | Hex Code |
 | :--- | :--- | :--- | :--- |
 | `Page Up` | `0x21` | `Up Arrow` | `0x26` |
@@ -69,7 +69,7 @@ private const uint VK_NEXT = 0x28;  // Down Arrow
 
 ---
 
-## 🛠️ Building from Source
+## Building from Source
 
 No Visual Studio required! You can compile the executable in 1 second using native Windows `.NET Framework`:
 
@@ -84,7 +84,7 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /target:winexe /out:Desk
 
 ---
 
-## 👤 Author
+## Author
 
 Developed by **[Charlise28](https://github.com/Charlise28)**  
 *Computer Engineering Student at University of San Carlos (USC), Philippines.*

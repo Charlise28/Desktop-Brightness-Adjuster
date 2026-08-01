@@ -1,0 +1,15 @@
+# Executables
+*.exe
+*.dll
+
+# Temporary dumps & logs
+*.txt
+*.log
+*.ps1
+!build_brightness_app.ps1
+
+# System & IDE
+.vs/
+bin/
+obj/
+*.user

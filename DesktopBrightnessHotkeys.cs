@@ -126,8 +126,8 @@ namespace DesktopBrightnessApp
             osdForm.ShowOSD(newBrightness);
             UpdateToolTip(newBrightness);
 
-            // 3. Asynchronous Non-blocking Hardware DDC/CI Sync
-            BrightnessController.SyncHardwareAsync(newBrightness);
+            // 3. Throttled Non-blocking Hardware DDC/CI Sync (Prevents CPU spikes during key repeats)
+            BrightnessController.SyncHardwareThrottled(newBrightness);
         }
 
         private void UpdateToolTip(int current)
@@ -357,6 +357,7 @@ namespace DesktopBrightnessApp
 
         private static int cachedBrightness = 100;
         private static bool isHardwarePending = false;
+        private static DateTime lastSyncTime = DateTime.MinValue;
 
         public static int CurrentBrightness
         {
@@ -369,11 +370,15 @@ namespace DesktopBrightnessApp
             return cachedBrightness;
         }
 
-        public static void SyncHardwareAsync(int targetBrightness)
+        public static void SyncHardwareThrottled(int targetBrightness)
         {
+            // Throttle hardware I2C calls to max 1 sync per 150ms during rapid key repeats
             if (isHardwarePending) return;
+            if ((DateTime.Now - lastSyncTime).TotalMilliseconds < 150) return;
 
             isHardwarePending = true;
+            lastSyncTime = DateTime.Now;
+
             Task.Run(() =>
             {
                 try

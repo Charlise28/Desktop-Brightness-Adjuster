@@ -82,7 +82,7 @@ namespace DesktopBrightnessApp
             RegisterHotKey(this.Handle, HOTKEY_UP_ID, MOD_ALT, VK_PRIOR);
             RegisterHotKey(this.Handle, HOTKEY_DN_ID, MOD_ALT, VK_NEXT);
 
-            // Deferred: read hardware brightness 3s after boot to avoid startup CPU hit
+            // Deferred: read hardware brightness 3s after boot and sync all monitors
             Timer deferredInit = new Timer();
             deferredInit.Interval = 3000;
             deferredInit.Tick += (s, e) =>
@@ -140,7 +140,7 @@ namespace DesktopBrightnessApp
             osdForm.ShowOSD(brightness);
             trayIcon.Text = "Desktop Brightness: " + brightness + "%\n(Alt+PgUp / Alt+PgDn)";
 
-            // Hardware DDC/CI backlight sync (throttled, non-blocking)
+            // Hardware DDC/CI backlight sync across ALL monitors (throttled, non-blocking)
             BrightnessController.SyncHardwareThrottled(brightness);
         }
 
@@ -320,7 +320,7 @@ namespace DesktopBrightnessApp
 
     // ─────────────────────────────────────────────────────────────
     // DDC/CI Hardware Backlight Controller
-    // Enumerates all connected monitors, throttled to 1 I2C call per 150ms
+    // Synchronizes ALL connected physical monitors simultaneously
     // ─────────────────────────────────────────────────────────────
     public static class BrightnessController
     {
@@ -361,13 +361,16 @@ namespace DesktopBrightnessApp
 
         public static int CurrentBrightness { get { return cachedBrightness; } }
 
-        // Deferred hardware query — called 3s after boot
+        // Deferred hardware query — reads initial brightness and forces ALL monitors to sync
         public static void InitializeHardware()
         {
             Task.Run(() =>
             {
                 try
                 {
+                    int detectedBrightness = -1;
+
+                    // Step 1: Read current hardware brightness from Primary Monitor
                     EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr hMon, IntPtr hdc, ref RECT rc, IntPtr data) =>
                     {
                         uint count;
@@ -378,12 +381,21 @@ namespace DesktopBrightnessApp
                             {
                                 uint minB, curB, maxB;
                                 if (GetMonitorBrightness(mons[0].hPhysicalMonitor, out minB, out curB, out maxB))
+                                {
+                                    detectedBrightness = (int)curB;
                                     cachedBrightness = (int)curB;
+                                }
                                 DestroyPhysicalMonitors(count, mons);
                             }
                         }
-                        return false; // Stop after first monitor
+                        return detectedBrightness == -1; // Stop once primary monitor is read
                     }, IntPtr.Zero);
+
+                    // Step 2: Immediately force ALL connected monitors to sync to the exact same brightness
+                    if (detectedBrightness != -1)
+                    {
+                        SetAllMonitorsHardwareBrightness(detectedBrightness);
+                    }
                 }
                 catch { }
             });
@@ -398,35 +410,42 @@ namespace DesktopBrightnessApp
         public static void SyncHardwareThrottled(int target)
         {
             if (isHardwarePending) return;
-            if ((DateTime.Now - lastSyncTime).TotalMilliseconds < 150) return;
+            if ((DateTime.Now - lastSyncTime).TotalMilliseconds < 100) return;
 
             isHardwarePending = true;
             lastSyncTime = DateTime.Now;
-            int t = target; // Capture for closure
+            int t = target;
 
             Task.Run(() =>
             {
                 try
                 {
-                    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr hMon, IntPtr hdc, ref RECT rc, IntPtr data) =>
-                    {
-                        uint count;
-                        if (GetNumberOfPhysicalMonitorsFromHMONITOR(hMon, out count) && count > 0)
-                        {
-                            PHYSICAL_MONITOR[] mons = new PHYSICAL_MONITOR[count];
-                            if (GetPhysicalMonitorsFromHMONITOR(hMon, count, mons))
-                            {
-                                for (int i = 0; i < count; i++)
-                                    SetMonitorBrightness(mons[i].hPhysicalMonitor, (uint)t);
-                                DestroyPhysicalMonitors(count, mons);
-                            }
-                        }
-                        return true; // Continue to all monitors
-                    }, IntPtr.Zero);
+                    SetAllMonitorsHardwareBrightness(t);
                 }
                 catch { }
                 finally { isHardwarePending = false; }
             });
+        }
+
+        private static void SetAllMonitorsHardwareBrightness(int targetBrightness)
+        {
+            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr hMon, IntPtr hdc, ref RECT rc, IntPtr data) =>
+            {
+                uint count;
+                if (GetNumberOfPhysicalMonitorsFromHMONITOR(hMon, out count) && count > 0)
+                {
+                    PHYSICAL_MONITOR[] mons = new PHYSICAL_MONITOR[count];
+                    if (GetPhysicalMonitorsFromHMONITOR(hMon, count, mons))
+                    {
+                        for (int i = 0; i < count; i++)
+                        {
+                            SetMonitorBrightness(mons[i].hPhysicalMonitor, (uint)targetBrightness);
+                        }
+                        DestroyPhysicalMonitors(count, mons);
+                    }
+                }
+                return true; // Continue through ALL monitors
+            }, IntPtr.Zero);
         }
     }
 }

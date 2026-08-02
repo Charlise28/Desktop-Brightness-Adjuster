@@ -1,6 +1,6 @@
 $cscPath = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-$srcFile = "H:\projects\brightness n taskbar\DesktopBrightnessHotkeys.cs"
-$outFile = "H:\projects\brightness n taskbar\DesktopBrightness.exe"
+$srcFile = "H:\projects\Brightness Adjuster\DesktopBrightnessHotkeys.cs"
+$outFile = "H:\projects\Brightness Adjuster\DesktopBrightness.exe"
 
 $refs = @(
     "System.dll",

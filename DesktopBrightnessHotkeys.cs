@@ -13,6 +13,7 @@ namespace DesktopBrightnessApp
         private NotifyIcon trayIcon;
         private ContextMenuStrip trayMenu;
         private OsdForm osdForm;
+        private DimmerOverlayForm dimmerOverlay;
 
         private const int WM_HOTKEY = 0x0312;
         private const int HOTKEY_UP_ID = 9001;
@@ -78,7 +79,7 @@ namespace DesktopBrightnessApp
             RegisterHotKey(this.Handle, HOTKEY_UP_ID, MOD_ALT, VK_PRIOR);
             RegisterHotKey(this.Handle, HOTKEY_DN_ID, MOD_ALT, VK_NEXT);
 
-            // Trim working set RAM to minimum (< 3 MB)
+            // Trim working set RAM to minimum (< 4 MB)
             TrimWorkingSetRAM();
         }
 
@@ -107,21 +108,25 @@ namespace DesktopBrightnessApp
 
         private void AdjustBrightness(int delta)
         {
-            // Lazy initialization of OSD on demand
+            // Lazy initialization on first hotkey press (0ms boot impact)
+            if (dimmerOverlay == null || dimmerOverlay.IsDisposed)
+            {
+                dimmerOverlay = new DimmerOverlayForm();
+            }
             if (osdForm == null || osdForm.IsDisposed)
             {
                 osdForm = new OsdForm(this.TrimWorkingSetRAM);
             }
 
-            // 1. Instantaneous Memory & Hardware GPU Gamma Ramp Update (0ms latency, dims EVERYTHING including mouse & Start Menu!)
+            // 1. Instantaneous Memory & Software Dimmer Overlay Update (0ms latency)
             int newBrightness = BrightnessController.AdjustInMemory(delta);
-            BrightnessController.SetSystemGammaBrightness(newBrightness);
+            dimmerOverlay.UpdateBrightness(newBrightness);
 
             // 2. Immediate Ultra-Minimalist Center OSD Render
             osdForm.ShowOSD(newBrightness);
             UpdateToolTip(newBrightness);
 
-            // 3. Throttled Non-blocking Hardware DDC/CI Sync (for physical monitors)
+            // 3. Hardware Monitor I2C DDC/CI Sync + GPU Gamma Ramp Fallback
             BrightnessController.SyncHardwareThrottled(newBrightness);
         }
 
@@ -177,15 +182,81 @@ namespace DesktopBrightnessApp
         {
             UnregisterHotKey(this.Handle, HOTKEY_UP_ID);
             UnregisterHotKey(this.Handle, HOTKEY_DN_ID);
-            // Restore 100% full hardware gamma on exit
-            BrightnessController.SetSystemGammaBrightness(100);
             trayIcon.Visible = false;
+            if (dimmerOverlay != null && !dimmerOverlay.IsDisposed) dimmerOverlay.Close();
             if (osdForm != null && !osdForm.IsDisposed) osdForm.Close();
             Application.Exit();
         }
     }
 
-    // Ultra-Minimalist Center-Screen Percentage Badge OSD (Excluded from Screen Capture)
+    // Click-Through Transparent Black Screen Dimmer Overlay with Topmost Z-Order Enforcement
+    public class DimmerOverlayForm : Form
+    {
+        private const int WS_EX_TRANSPARENT = 0x20;
+        private const int WS_EX_LAYERED = 0x80000;
+        private const int WS_EX_NOACTIVATE = 0x08000000;
+        private const int WS_EX_TOPMOST = 0x8;
+
+        private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+        private const uint SWP_NOMOVE = 0x0002;
+        private const uint SWP_NOSIZE = 0x0001;
+        private const uint SWP_NOACTIVATE = 0x0010;
+        private const uint SWP_SHOWWINDOW = 0x0040;
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+        private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+
+        public DimmerOverlayForm()
+        {
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.StartPosition = FormStartPosition.Manual;
+            this.ShowInTaskbar = false;
+            this.BackColor = Color.Black;
+            this.DoubleBuffered = true;
+
+            Rectangle virtualScreen = SystemInformation.VirtualScreen;
+            this.Bounds = virtualScreen;
+
+            this.Show();
+
+            // Enforce HWND_TOPMOST Z-Order above Windows Start Menu
+            SetWindowPos(this.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+            // Exclude overlay from screen capture, screenshots, and Discord/Zoom screen shares
+            SetWindowDisplayAffinity(this.Handle, WDA_EXCLUDEFROMCAPTURE);
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOPMOST;
+                return cp;
+            }
+        }
+
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
+
+        public void UpdateBrightness(int percent)
+        {
+            float opacity = (100.0f - percent) / 100.0f * 0.75f;
+            this.Opacity = Math.Max(0.0f, Math.Min(0.75f, opacity));
+            if (this.Opacity > 0)
+            {
+                SetWindowPos(this.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            }
+        }
+    }
+
+    // Ultra-Minimalist Center-Screen Percentage Badge OSD
     public class OsdForm : Form
     {
         private Timer hideTimer;
@@ -273,26 +344,6 @@ namespace DesktopBrightnessApp
 
     public static class BrightnessController
     {
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-        private struct RAMPS
-        {
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
-            public ushort[] Red;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
-            public ushort[] Green;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
-            public ushort[] Blue;
-        }
-
-        [DllImport("gdi32.dll")]
-        private static extern bool SetDeviceGammaRamp(IntPtr hDC, ref RAMPS lpRamp);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetDC(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
-
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
         private struct PHYSICAL_MONITOR
         {
@@ -329,39 +380,6 @@ namespace DesktopBrightnessApp
         {
             cachedBrightness = Math.Max(5, Math.Min(100, cachedBrightness + delta));
             return cachedBrightness;
-        }
-
-        // Hardware GPU Gamma Ramp Dimmer (Dims EVERYTHING: mouse cursor, Start Menu, taskbar, notifications!)
-        // Does NOT affect screenshots or Discord screen shares!
-        public static void SetSystemGammaBrightness(int percent)
-        {
-            try
-            {
-                double factor = percent / 100.0;
-                RAMPS ramp = new RAMPS();
-                ramp.Red = new ushort[256];
-                ramp.Green = new ushort[256];
-                ramp.Blue = new ushort[256];
-
-                for (int i = 0; i < 256; i++)
-                {
-                    int val = (int)(i * 256 * factor);
-                    if (val > 65535) val = 65535;
-                    if (val < 0) val = 0;
-
-                    ramp.Red[i] = (ushort)val;
-                    ramp.Green[i] = (ushort)val;
-                    ramp.Blue[i] = (ushort)val;
-                }
-
-                IntPtr hDC = GetDC(IntPtr.Zero);
-                if (hDC != IntPtr.Zero)
-                {
-                    SetDeviceGammaRamp(hDC, ref ramp);
-                    ReleaseDC(IntPtr.Zero, hDC);
-                }
-            }
-            catch { }
         }
 
         public static void SyncHardwareThrottled(int targetBrightness)

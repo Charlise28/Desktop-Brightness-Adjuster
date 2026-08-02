@@ -13,6 +13,7 @@ namespace DesktopBrightnessApp
         private NotifyIcon trayIcon;
         private ContextMenuStrip trayMenu;
         private OsdForm osdForm;
+        private DimmerOverlayForm dimmerOverlay;
 
         private const int WM_HOTKEY = 0x0312;
         private const int HOTKEY_UP_ID = 9001;
@@ -70,7 +71,7 @@ namespace DesktopBrightnessApp
                 Icon = SystemIcons.Application,
                 ContextMenuStrip = trayMenu,
                 Visible = true,
-                Text = "Desktop Brightness: 100%\n(Alt+PgUp / Alt+PgDn)"
+                Text = "Desktop Brightness: 50%\n(Alt+PgUp / Alt+PgDn)"
             };
 
             // Register Global Hotkeys (< 1ms CPU footprint)
@@ -113,15 +114,33 @@ namespace DesktopBrightnessApp
                 osdForm = new OsdForm(this.TrimWorkingSetRAM);
             }
 
-            // 1. Instantaneous Memory Update
             int newBrightness = BrightnessController.AdjustInMemory(delta);
+
+            // 1. If brightness is below 50%, use soft overlay to dim lower than hardware minimum
+            if (newBrightness < 50)
+            {
+                if (dimmerOverlay == null || dimmerOverlay.IsDisposed)
+                {
+                    dimmerOverlay = new DimmerOverlayForm();
+                }
+                float overlayOpacity = (50 - newBrightness) / 50.0f * 0.70f;
+                dimmerOverlay.UpdateOpacity(overlayOpacity);
+            }
+            else
+            {
+                if (dimmerOverlay != null && !dimmerOverlay.IsDisposed)
+                {
+                    dimmerOverlay.UpdateOpacity(0.0f);
+                }
+            }
 
             // 2. Immediate Minimalist Center OSD Render
             osdForm.ShowOSD(newBrightness);
             UpdateToolTip(newBrightness);
 
-            // 3. Direct Hardware Monitor Backlight Sync across all connected monitors (Koorui & Nvision)
-            BrightnessController.SyncHardwareThrottled(newBrightness);
+            // 3. Smooth Hardware Backlight Curve (capped at 50% max to prevent blinding contrast overdrive)
+            int hwTarget = Math.Max(0, (newBrightness - 20) * 50 / 80);
+            BrightnessController.SyncHardwareThrottled(hwTarget);
         }
 
         private void UpdateToolTip(int current)
@@ -177,8 +196,57 @@ namespace DesktopBrightnessApp
             UnregisterHotKey(this.Handle, HOTKEY_UP_ID);
             UnregisterHotKey(this.Handle, HOTKEY_DN_ID);
             trayIcon.Visible = false;
+            if (dimmerOverlay != null && !dimmerOverlay.IsDisposed) dimmerOverlay.Close();
             if (osdForm != null && !osdForm.IsDisposed) osdForm.Close();
             Application.Exit();
+        }
+    }
+
+    // Click-Through Transparent Black Screen Dimmer Overlay with Screen Capture Exclusion
+    public class DimmerOverlayForm : Form
+    {
+        private const int WS_EX_TRANSPARENT = 0x20;
+        private const int WS_EX_LAYERED = 0x80000;
+        private const int WS_EX_NOACTIVATE = 0x08000000;
+        private const int WS_EX_TOPMOST = 0x8;
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+        private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+
+        public DimmerOverlayForm()
+        {
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.StartPosition = FormStartPosition.Manual;
+            this.ShowInTaskbar = false;
+            this.BackColor = Color.Black;
+            this.DoubleBuffered = true;
+
+            Rectangle virtualScreen = SystemInformation.VirtualScreen;
+            this.Bounds = virtualScreen;
+
+            this.Show();
+            SetWindowDisplayAffinity(this.Handle, WDA_EXCLUDEFROMCAPTURE);
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOPMOST;
+                return cp;
+            }
+        }
+
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
+        }
+
+        public void UpdateOpacity(float opacity)
+        {
+            this.Opacity = Math.Max(0.0f, Math.Min(0.75f, opacity));
         }
     }
 
@@ -335,7 +403,7 @@ namespace DesktopBrightnessApp
                                     uint minB = 0, curB = 0, maxB = 0;
                                     if (GetMonitorBrightness(monitors[i].hPhysicalMonitor, out minB, out curB, out maxB))
                                     {
-                                        cachedBrightness = (int)curB;
+                                        cachedBrightness = Math.Min(50, (int)curB);
                                         break;
                                     }
                                 }
@@ -351,7 +419,7 @@ namespace DesktopBrightnessApp
 
         public static int AdjustInMemory(int delta)
         {
-            cachedBrightness = Math.Max(0, Math.Min(100, cachedBrightness + delta));
+            cachedBrightness = Math.Max(5, Math.Min(100, cachedBrightness + delta));
             return cachedBrightness;
         }
 

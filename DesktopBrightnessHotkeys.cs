@@ -13,7 +13,6 @@ namespace DesktopBrightnessApp
         private NotifyIcon trayIcon;
         private ContextMenuStrip trayMenu;
         private OsdForm osdForm;
-        private DimmerOverlayForm dimmerOverlay;
 
         private const int WM_HOTKEY = 0x0312;
         private const int HOTKEY_UP_ID = 9001;
@@ -78,6 +77,9 @@ namespace DesktopBrightnessApp
             RegisterHotKey(this.Handle, HOTKEY_UP_ID, MOD_ALT, VK_PRIOR);
             RegisterHotKey(this.Handle, HOTKEY_DN_ID, MOD_ALT, VK_NEXT);
 
+            // Fetch initial hardware monitor brightness
+            BrightnessController.InitializeHardware();
+
             TrimWorkingSetRAM();
         }
 
@@ -106,21 +108,19 @@ namespace DesktopBrightnessApp
 
         private void AdjustBrightness(int delta)
         {
-            if (dimmerOverlay == null || dimmerOverlay.IsDisposed)
-            {
-                dimmerOverlay = new DimmerOverlayForm();
-            }
             if (osdForm == null || osdForm.IsDisposed)
             {
                 osdForm = new OsdForm(this.TrimWorkingSetRAM);
             }
 
+            // 1. Instantaneous Memory Update
             int newBrightness = BrightnessController.AdjustInMemory(delta);
-            dimmerOverlay.UpdateBrightness(newBrightness);
 
+            // 2. Immediate Minimalist Center OSD Render
             osdForm.ShowOSD(newBrightness);
             UpdateToolTip(newBrightness);
 
+            // 3. Direct Hardware Monitor Backlight Sync across all connected monitors (Koorui & Nvision)
             BrightnessController.SyncHardwareThrottled(newBrightness);
         }
 
@@ -177,60 +177,8 @@ namespace DesktopBrightnessApp
             UnregisterHotKey(this.Handle, HOTKEY_UP_ID);
             UnregisterHotKey(this.Handle, HOTKEY_DN_ID);
             trayIcon.Visible = false;
-            if (dimmerOverlay != null && !dimmerOverlay.IsDisposed) dimmerOverlay.Close();
             if (osdForm != null && !osdForm.IsDisposed) osdForm.Close();
             Application.Exit();
-        }
-    }
-
-    // Click-Through Transparent Black Screen Dimmer Overlay with Screen Capture Exclusion
-    public class DimmerOverlayForm : Form
-    {
-        private const int WS_EX_TRANSPARENT = 0x20;
-        private const int WS_EX_LAYERED = 0x80000;
-        private const int WS_EX_NOACTIVATE = 0x08000000;
-        private const int WS_EX_TOPMOST = 0x8;
-
-        [DllImport("user32.dll")]
-        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
-
-        private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
-
-        public DimmerOverlayForm()
-        {
-            this.FormBorderStyle = FormBorderStyle.None;
-            this.StartPosition = FormStartPosition.Manual;
-            this.ShowInTaskbar = false;
-            this.BackColor = Color.Black;
-            this.DoubleBuffered = true;
-
-            Rectangle virtualScreen = SystemInformation.VirtualScreen;
-            this.Bounds = virtualScreen;
-
-            this.Show();
-
-            // Exclude overlay from screen capture, screenshots, and Discord/Zoom screen shares
-            SetWindowDisplayAffinity(this.Handle, WDA_EXCLUDEFROMCAPTURE);
-        }
-
-        protected override CreateParams CreateParams
-        {
-            get {
-                CreateParams cp = base.CreateParams;
-                cp.ExStyle |= WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOPMOST;
-                return cp;
-            }
-        }
-
-        protected override bool ShowWithoutActivation
-        {
-            get { return true; }
-        }
-
-        public void UpdateBrightness(int percent)
-        {
-            float opacity = (100.0f - percent) / 100.0f * 0.75f;
-            this.Opacity = Math.Max(0.0f, Math.Min(0.75f, opacity));
         }
     }
 
@@ -331,7 +279,18 @@ namespace DesktopBrightnessApp
         }
 
         [DllImport("user32.dll")]
-        private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+        private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, MonitorEnumDelegate lpfnEnum, IntPtr dwData);
+
+        private delegate bool MonitorEnumDelegate(IntPtr hMonitor, IntPtr hdcMonitor, ref RECT lprcMonitor, IntPtr dwData);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int left;
+            public int top;
+            public int right;
+            public int bottom;
+        }
 
         [DllImport("dxva2.dll", SetLastError = true)]
         private static extern bool GetNumberOfPhysicalMonitorsFromHMONITOR(IntPtr hMonitor, out uint pdwNumberOfPhysicalMonitors);
@@ -340,12 +299,15 @@ namespace DesktopBrightnessApp
         private static extern bool GetPhysicalMonitorsFromHMONITOR(IntPtr hMonitor, uint dwPhysicalMonitorArraySize, [Out] PHYSICAL_MONITOR[] pPhysicalMonitorArray);
 
         [DllImport("dxva2.dll", SetLastError = true)]
+        private static extern bool GetMonitorBrightness(IntPtr hMonitor, out uint pdwMinimumBrightness, out uint pdwCurrentBrightness, out uint pdwMaximumBrightness);
+
+        [DllImport("dxva2.dll", SetLastError = true)]
         private static extern bool SetMonitorBrightness(IntPtr hMonitor, uint dwNewBrightness);
 
         [DllImport("dxva2.dll", SetLastError = true)]
         private static extern bool DestroyPhysicalMonitors(uint dwPhysicalMonitorArraySize, PHYSICAL_MONITOR[] pPhysicalMonitorArray);
 
-        private static int cachedBrightness = 100;
+        private static int cachedBrightness = 50;
         private static bool isHardwarePending = false;
         private static DateTime lastSyncTime = DateTime.MinValue;
 
@@ -354,16 +316,49 @@ namespace DesktopBrightnessApp
             get { return cachedBrightness; }
         }
 
+        public static void InitializeHardware()
+        {
+            Task.Run(() =>
+            {
+                try
+                {
+                    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr hMonitor, IntPtr hdcMonitor, ref RECT lprcMonitor, IntPtr dwData) =>
+                    {
+                        uint count = 0;
+                        if (GetNumberOfPhysicalMonitorsFromHMONITOR(hMonitor, out count) && count > 0)
+                        {
+                            PHYSICAL_MONITOR[] monitors = new PHYSICAL_MONITOR[count];
+                            if (GetPhysicalMonitorsFromHMONITOR(hMonitor, count, monitors))
+                            {
+                                for (int i = 0; i < count; i++)
+                                {
+                                    uint minB = 0, curB = 0, maxB = 0;
+                                    if (GetMonitorBrightness(monitors[i].hPhysicalMonitor, out minB, out curB, out maxB))
+                                    {
+                                        cachedBrightness = (int)curB;
+                                        break;
+                                    }
+                                }
+                                DestroyPhysicalMonitors(count, monitors);
+                            }
+                        }
+                        return true;
+                    }, IntPtr.Zero);
+                }
+                catch { }
+            });
+        }
+
         public static int AdjustInMemory(int delta)
         {
-            cachedBrightness = Math.Max(5, Math.Min(100, cachedBrightness + delta));
+            cachedBrightness = Math.Max(0, Math.Min(100, cachedBrightness + delta));
             return cachedBrightness;
         }
 
         public static void SyncHardwareThrottled(int targetBrightness)
         {
             if (isHardwarePending) return;
-            if ((DateTime.Now - lastSyncTime).TotalMilliseconds < 150) return;
+            if ((DateTime.Now - lastSyncTime).TotalMilliseconds < 100) return;
 
             isHardwarePending = true;
             lastSyncTime = DateTime.Now;
@@ -372,20 +367,23 @@ namespace DesktopBrightnessApp
             {
                 try
                 {
-                    IntPtr hMonitor = MonitorFromWindow(IntPtr.Zero, 1);
-                    uint count = 0;
-                    if (GetNumberOfPhysicalMonitorsFromHMONITOR(hMonitor, out count) && count > 0)
+                    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr hMonitor, IntPtr hdcMonitor, ref RECT lprcMonitor, IntPtr dwData) =>
                     {
-                        PHYSICAL_MONITOR[] monitors = new PHYSICAL_MONITOR[count];
-                        if (GetPhysicalMonitorsFromHMONITOR(hMonitor, count, monitors))
+                        uint count = 0;
+                        if (GetNumberOfPhysicalMonitorsFromHMONITOR(hMonitor, out count) && count > 0)
                         {
-                            foreach (var mon in monitors)
+                            PHYSICAL_MONITOR[] monitors = new PHYSICAL_MONITOR[count];
+                            if (GetPhysicalMonitorsFromHMONITOR(hMonitor, count, monitors))
                             {
-                                SetMonitorBrightness(mon.hPhysicalMonitor, (uint)targetBrightness);
+                                foreach (var mon in monitors)
+                                {
+                                    SetMonitorBrightness(mon.hPhysicalMonitor, (uint)targetBrightness);
+                                }
+                                DestroyPhysicalMonitors(count, monitors);
                             }
-                            DestroyPhysicalMonitors(count, monitors);
                         }
-                    }
+                        return true;
+                    }, IntPtr.Zero);
                 }
                 catch { }
                 finally

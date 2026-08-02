@@ -1,8 +1,6 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -18,7 +16,6 @@ namespace DesktopBrightnessApp
         private DimmerOverlayForm dimmerOverlay;
 
         private const int WM_HOTKEY = 0x0312;
-        private const int WM_CLIPBOARDUPDATE = 0x031D;
         private const int HOTKEY_UP_ID = 9001;
         private const int HOTKEY_DN_ID = 9002;
 
@@ -32,16 +29,8 @@ namespace DesktopBrightnessApp
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
-        [DllImport("user32.dll", SetLastError = true)]
-        private static extern bool AddClipboardFormatListener(IntPtr hwnd);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        private static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
-
         [DllImport("kernel32.dll")]
         private static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr dwMinimumWorkingSetSize, IntPtr dwMaximumWorkingSetSize);
-
-        private bool isProcessingClipboard = false;
 
         [STAThread]
         public static void Main()
@@ -89,9 +78,6 @@ namespace DesktopBrightnessApp
             RegisterHotKey(this.Handle, HOTKEY_UP_ID, MOD_ALT, VK_PRIOR);
             RegisterHotKey(this.Handle, HOTKEY_DN_ID, MOD_ALT, VK_NEXT);
 
-            // Listen for Clipboard updates to automatically un-dim screenshots in memory
-            AddClipboardFormatListener(this.Handle);
-
             TrimWorkingSetRAM();
         }
 
@@ -115,10 +101,6 @@ namespace DesktopBrightnessApp
                     AdjustBrightness(-1);
                 }
             }
-            else if (m.Msg == WM_CLIPBOARDUPDATE)
-            {
-                OnClipboardUpdate();
-            }
             base.WndProc(ref m);
         }
 
@@ -140,66 +122,6 @@ namespace DesktopBrightnessApp
             UpdateToolTip(newBrightness);
 
             BrightnessController.SyncHardwareThrottled(newBrightness);
-        }
-
-        private void OnClipboardUpdate()
-        {
-            if (isProcessingClipboard) return;
-            int currentBrightness = BrightnessController.CurrentBrightness;
-            if (currentBrightness >= 98) return; // Already full brightness
-
-            try
-            {
-                if (Clipboard.ContainsImage())
-                {
-                    isProcessingClipboard = true;
-                    Image img = Clipboard.GetImage();
-                    if (img != null)
-                    {
-                        using (Bitmap bmp = new Bitmap(img))
-                        {
-                            // Reverse dimming calculation on clipboard image to restore 100% full brightness
-                            float opacity = (100.0f - currentBrightness) / 100.0f * 0.75f;
-                            float targetGain = 1.0f / Math.Max(0.25f, (1.0f - opacity));
-
-                            using (Bitmap restoredBmp = ApplyBrightnessGain(bmp, targetGain))
-                            {
-                                Clipboard.SetImage(restoredBmp);
-                            }
-                        }
-                    }
-                }
-            }
-            catch { }
-            finally
-            {
-                isProcessingClipboard = false;
-            }
-        }
-
-        private Bitmap ApplyBrightnessGain(Bitmap original, float gain)
-        {
-            Bitmap result = new Bitmap(original.Width, original.Height, PixelFormat.Format32bppArgb);
-            using (Graphics g = Graphics.FromImage(result))
-            {
-                float gVal = Math.Min(2.5f, gain);
-                ColorMatrix colorMatrix = new ColorMatrix(new float[][]
-                {
-                    new float[] {gVal, 0, 0, 0, 0},
-                    new float[] {0, gVal, 0, 0, 0},
-                    new float[] {0, 0, gVal, 0, 0},
-                    new float[] {0, 0, 0, 1, 0},
-                    new float[] {0, 0, 0, 0, 1}
-                });
-
-                using (ImageAttributes attributes = new ImageAttributes())
-                {
-                    attributes.SetColorMatrix(colorMatrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
-                    g.DrawImage(original, new Rectangle(0, 0, original.Width, original.Height),
-                        0, 0, original.Width, original.Height, GraphicsUnit.Pixel, attributes);
-                }
-            }
-            return result;
         }
 
         private void UpdateToolTip(int current)
@@ -252,7 +174,6 @@ namespace DesktopBrightnessApp
 
         private void ExitApp()
         {
-            RemoveClipboardFormatListener(this.Handle);
             UnregisterHotKey(this.Handle, HOTKEY_UP_ID);
             UnregisterHotKey(this.Handle, HOTKEY_DN_ID);
             trayIcon.Visible = false;
@@ -262,7 +183,7 @@ namespace DesktopBrightnessApp
         }
     }
 
-    // Click-Through Transparent Black Screen Dimmer Overlay (Protects Eyes During Win+Shift+S Snipping)
+    // Click-Through Transparent Black Screen Dimmer Overlay with Screen Capture Exclusion
     public class DimmerOverlayForm : Form
     {
         private const int WS_EX_TRANSPARENT = 0x20;
@@ -270,14 +191,10 @@ namespace DesktopBrightnessApp
         private const int WS_EX_NOACTIVATE = 0x08000000;
         private const int WS_EX_TOPMOST = 0x8;
 
-        private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
-        private const uint SWP_NOMOVE = 0x0002;
-        private const uint SWP_NOSIZE = 0x0001;
-        private const uint SWP_NOACTIVATE = 0x0010;
-        private const uint SWP_SHOWWINDOW = 0x0040;
-
         [DllImport("user32.dll")]
-        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+        private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
 
         public DimmerOverlayForm()
         {
@@ -291,7 +208,9 @@ namespace DesktopBrightnessApp
             this.Bounds = virtualScreen;
 
             this.Show();
-            SetWindowPos(this.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+            // Exclude overlay from screen capture, screenshots, and Discord/Zoom screen shares
+            SetWindowDisplayAffinity(this.Handle, WDA_EXCLUDEFROMCAPTURE);
         }
 
         protected override CreateParams CreateParams
@@ -312,10 +231,6 @@ namespace DesktopBrightnessApp
         {
             float opacity = (100.0f - percent) / 100.0f * 0.75f;
             this.Opacity = Math.Max(0.0f, Math.Min(0.75f, opacity));
-            if (this.Opacity > 0)
-            {
-                SetWindowPos(this.Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-            }
         }
     }
 
@@ -330,6 +245,11 @@ namespace DesktopBrightnessApp
         private static readonly SolidBrush bgBrush = new SolidBrush(Color.FromArgb(248, 16, 16, 20));
         private static readonly SolidBrush textBrush = new SolidBrush(Color.White);
         private static readonly Pen borderPen = new Pen(Color.FromArgb(50, 50, 58), 1.5f);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+        private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
 
         public OsdForm(Action onHide = null)
         {
@@ -354,6 +274,12 @@ namespace DesktopBrightnessApp
                 this.Hide();
                 if (onHideCallback != null) onHideCallback();
             };
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            SetWindowDisplayAffinity(this.Handle, WDA_EXCLUDEFROMCAPTURE);
         }
 
         protected override bool ShowWithoutActivation

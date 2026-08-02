@@ -116,14 +116,14 @@ namespace DesktopBrightnessApp
 
             int newBrightness = BrightnessController.AdjustInMemory(delta);
 
-            // 1. If brightness is below 50%, use soft overlay to dim lower than hardware minimum
-            if (newBrightness < 50)
+            // 1. Dimming Layer & Software Cursor Dimmer
+            if (newBrightness < 100)
             {
                 if (dimmerOverlay == null || dimmerOverlay.IsDisposed)
                 {
                     dimmerOverlay = new DimmerOverlayForm();
                 }
-                float overlayOpacity = (50 - newBrightness) / 50.0f * 0.70f;
+                float overlayOpacity = (100 - newBrightness) / 100.0f * 0.75f;
                 dimmerOverlay.UpdateOpacity(overlayOpacity);
             }
             else
@@ -138,8 +138,8 @@ namespace DesktopBrightnessApp
             osdForm.ShowOSD(newBrightness);
             UpdateToolTip(newBrightness);
 
-            // 3. Smooth Hardware Backlight Curve (capped at 50% max to prevent blinding contrast overdrive)
-            int hwTarget = Math.Max(0, (newBrightness - 20) * 50 / 80);
+            // 3. Smooth Hardware Backlight Curve
+            int hwTarget = Math.Max(0, Math.Min(100, newBrightness));
             BrightnessController.SyncHardwareThrottled(hwTarget);
         }
 
@@ -202,7 +202,7 @@ namespace DesktopBrightnessApp
         }
     }
 
-    // Click-Through Transparent Black Screen Dimmer Overlay with Screen Capture Exclusion
+    // Click-Through Transparent Black Screen Dimmer Overlay with Hardware Mouse Follower & Capture Exclusion
     public class DimmerOverlayForm : Form
     {
         private const int WS_EX_TRANSPARENT = 0x20;
@@ -214,6 +214,10 @@ namespace DesktopBrightnessApp
         private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
 
         private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+
+        private Timer mouseTrackerTimer;
+        private Point currentMousePos;
+        private float currentOpacity = 0.0f;
 
         public DimmerOverlayForm()
         {
@@ -228,6 +232,24 @@ namespace DesktopBrightnessApp
 
             this.Show();
             SetWindowDisplayAffinity(this.Handle, WDA_EXCLUDEFROMCAPTURE);
+
+            // Timer to track mouse cursor position and draw software cursor tint over hardware cursor
+            mouseTrackerTimer = new Timer();
+            mouseTrackerTimer.Interval = 16; // ~60 FPS cursor tracking
+            mouseTrackerTimer.Tick += (s, e) =>
+            {
+                if (this.currentOpacity > 0.05f)
+                {
+                    Point newPos = Cursor.Position;
+                    Point localPos = this.PointToClient(newPos);
+                    if (localPos != currentMousePos)
+                    {
+                        currentMousePos = localPos;
+                        this.Invalidate();
+                    }
+                }
+            };
+            mouseTrackerTimer.Start();
         }
 
         protected override CreateParams CreateParams
@@ -246,7 +268,26 @@ namespace DesktopBrightnessApp
 
         public void UpdateOpacity(float opacity)
         {
-            this.Opacity = Math.Max(0.0f, Math.Min(0.75f, opacity));
+            this.currentOpacity = Math.Max(0.0f, Math.Min(0.75f, opacity));
+            this.Opacity = this.currentOpacity;
+            this.Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (currentOpacity > 0.05f)
+            {
+                Graphics g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+                // Draw dark tint circle over hardware cursor location to dim the mouse pointer
+                int alpha = (int)(currentOpacity * 220);
+                using (SolidBrush cursorDimBrush = new SolidBrush(Color.FromArgb(alpha, 0, 0, 0)))
+                {
+                    g.FillEllipse(cursorDimBrush, currentMousePos.X - 16, currentMousePos.Y - 16, 32, 32);
+                }
+            }
         }
     }
 
@@ -403,7 +444,7 @@ namespace DesktopBrightnessApp
                                     uint minB = 0, curB = 0, maxB = 0;
                                     if (GetMonitorBrightness(monitors[i].hPhysicalMonitor, out minB, out curB, out maxB))
                                     {
-                                        cachedBrightness = Math.Min(50, (int)curB);
+                                        cachedBrightness = (int)curB;
                                         break;
                                     }
                                 }

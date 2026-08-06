@@ -11,6 +11,8 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
+using System.Collections.Generic;
+
 namespace DesktopBrightnessApp
 {
     public class HiddenMainForm : Form
@@ -18,7 +20,7 @@ namespace DesktopBrightnessApp
         private NotifyIcon trayIcon;
         private ContextMenuStrip trayMenu;
         private OsdForm osdForm;
-        private DimmerOverlayForm dimmerOverlay;
+        private List<DimmerOverlayForm> dimmerOverlays = new List<DimmerOverlayForm>();
 
         private const int WM_HOTKEY = 0x0312;
         private const int HOTKEY_UP_ID = 9001;
@@ -134,18 +136,24 @@ namespace DesktopBrightnessApp
 
             int brightness = BrightnessController.AdjustInMemory(delta);
 
-            // Software overlay for dimming below 100%
-            if (brightness < 100)
-            {
-                if (dimmerOverlay == null || dimmerOverlay.IsDisposed)
-                    dimmerOverlay = new DimmerOverlayForm();
+            // Multi-monitor software overlay for dimming below 100%
+            float opacity = (brightness < 100) ? ((100 - brightness) / 100.0f * 0.75f) : 0.0f;
 
-                float opacity = (100 - brightness) / 100.0f * 0.75f;
-                dimmerOverlay.SetDimLevel(opacity);
-            }
-            else if (dimmerOverlay != null && !dimmerOverlay.IsDisposed)
+            if (dimmerOverlays.Count == 0 || dimmerOverlays[0].IsDisposed)
             {
-                dimmerOverlay.SetDimLevel(0.0f);
+                dimmerOverlays.Clear();
+                foreach (Screen scr in Screen.AllScreens)
+                {
+                    dimmerOverlays.Add(new DimmerOverlayForm(scr.Bounds));
+                }
+            }
+
+            foreach (var overlay in dimmerOverlays)
+            {
+                if (overlay != null && !overlay.IsDisposed)
+                {
+                    overlay.SetDimLevel(opacity);
+                }
             }
 
             // Show OSD badge and update tray tooltip
@@ -205,7 +213,10 @@ namespace DesktopBrightnessApp
             UnregisterHotKey(this.Handle, HOTKEY_UP_ID);
             UnregisterHotKey(this.Handle, HOTKEY_DN_ID);
             if (trayIcon != null) trayIcon.Visible = false;
-            if (dimmerOverlay != null && !dimmerOverlay.IsDisposed) dimmerOverlay.Close();
+            foreach (var overlay in dimmerOverlays)
+            {
+                if (overlay != null && !overlay.IsDisposed) overlay.Close();
+            }
             if (osdForm != null && !osdForm.IsDisposed) osdForm.Close();
             Application.Exit();
         }
@@ -213,7 +224,7 @@ namespace DesktopBrightnessApp
 
     // ─────────────────────────────────────────────────────────────
     // Click-Through Transparent Black Overlay (Screen Capture Excluded)
-    // Zero timers, zero polling, zero idle CPU
+    // Multi-Monitor Aware: Creates an overlay per physical Screen
     // ─────────────────────────────────────────────────────────────
     public class DimmerOverlayForm : Form
     {
@@ -227,13 +238,13 @@ namespace DesktopBrightnessApp
 
         private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
 
-        public DimmerOverlayForm()
+        public DimmerOverlayForm(Rectangle screenBounds)
         {
             this.FormBorderStyle = FormBorderStyle.None;
             this.StartPosition = FormStartPosition.Manual;
             this.ShowInTaskbar = false;
             this.BackColor = Color.Black;
-            this.Bounds = SystemInformation.VirtualScreen;
+            this.Bounds = screenBounds;
             this.Show();
             SetWindowDisplayAffinity(this.Handle, WDA_EXCLUDEFROMCAPTURE);
         }

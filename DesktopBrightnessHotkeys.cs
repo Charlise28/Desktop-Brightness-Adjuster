@@ -376,41 +376,18 @@ namespace DesktopBrightnessApp
 
         public static int CurrentBrightness { get { return cachedBrightness; } }
 
-        // Deferred hardware query — reads initial brightness and forces ALL monitors to sync
+        // Deferred hardware query — defaults to 100% on bootup and forces ALL monitors to 100% sync
         public static void InitializeHardware()
         {
             Task.Run(() =>
             {
                 try
                 {
-                    int detectedBrightness = -1;
+                    // Default to 100% on bootup for clean baseline
+                    cachedBrightness = 100;
 
-                    // Step 1: Read current hardware brightness from Primary Monitor
-                    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr hMon, IntPtr hdc, ref RECT rc, IntPtr data) =>
-                    {
-                        uint count;
-                        if (GetNumberOfPhysicalMonitorsFromHMONITOR(hMon, out count) && count > 0)
-                        {
-                            PHYSICAL_MONITOR[] mons = new PHYSICAL_MONITOR[count];
-                            if (GetPhysicalMonitorsFromHMONITOR(hMon, count, mons))
-                            {
-                                uint minB, curB, maxB;
-                                if (GetMonitorBrightness(mons[0].hPhysicalMonitor, out minB, out curB, out maxB))
-                                {
-                                    detectedBrightness = (int)curB;
-                                    cachedBrightness = (int)curB;
-                                }
-                                DestroyPhysicalMonitors(count, mons);
-                            }
-                        }
-                        return detectedBrightness == -1; // Stop once primary monitor is read
-                    }, IntPtr.Zero);
-
-                    // Step 2: Immediately force ALL connected monitors to sync to the exact same brightness
-                    if (detectedBrightness != -1)
-                    {
-                        SetAllMonitorsHardwareBrightness(detectedBrightness);
-                    }
+                    // Immediately force ALL connected monitors to sync to 100% baseline hardware brightness
+                    SetAllMonitorsHardwareBrightness(100);
                 }
                 catch { }
             });

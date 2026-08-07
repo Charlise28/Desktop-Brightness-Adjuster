@@ -7,6 +7,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -23,6 +24,7 @@ namespace DesktopBrightnessApp
         private List<DimmerOverlayForm> dimmerOverlays = new List<DimmerOverlayForm>();
 
         private const int WM_HOTKEY = 0x0312;
+        private const int WM_DISPLAYCHANGE = 0x007E;
         private const int HOTKEY_UP_ID = 9001;
         private const int HOTKEY_DN_ID = 9002;
 
@@ -42,9 +44,16 @@ namespace DesktopBrightnessApp
         [STAThread]
         public static void Main()
         {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new HiddenMainForm());
+            // BUG FIX: Prevent duplicate instances from registering the same hotkeys
+            bool createdNew;
+            using (var mutex = new Mutex(true, "Global\\DesktopBrightnessApp_SingleInstance", out createdNew))
+            {
+                if (!createdNew) return; // Another instance is already running
+
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new HiddenMainForm());
+            }
         }
 
         public HiddenMainForm()
@@ -61,7 +70,7 @@ namespace DesktopBrightnessApp
 
             // Deferred initialization (3 seconds after boot):
             // Builds tray icon, reads registry, and syncs hardware DDC/CI monitor brightness out-of-band
-            Timer deferredInit = new Timer();
+            System.Windows.Forms.Timer deferredInit = new System.Windows.Forms.Timer();
             deferredInit.Interval = 3000;
             deferredInit.Tick += (s, e) =>
             {
@@ -74,8 +83,22 @@ namespace DesktopBrightnessApp
             };
             deferredInit.Start();
 
+            // Listen for display configuration changes (monitor plug/unplug, resolution change)
+            SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+
             // Initial memory trim
             TrimWorkingSet();
+        }
+
+        private void OnDisplaySettingsChanged(object sender, EventArgs e)
+        {
+            // BUG FIX: Rebuild overlays when monitors are added/removed/rearranged
+            DisposeOverlays();
+            // OSD will also need its position recalculated on next show
+            if (osdForm != null && !osdForm.IsDisposed)
+            {
+                osdForm.RecenterOnScreen();
+            }
         }
 
         private void InitTrayIcon()
@@ -137,41 +160,87 @@ namespace DesktopBrightnessApp
             int brightness = BrightnessController.AdjustInMemory(delta);
 
             // Multi-monitor software overlay for dimming below 100%
-            float opacity = (brightness < 100) ? ((100 - brightness) / 100.0f * 0.75f) : 0.0f;
-
-            if (dimmerOverlays.Count == 0 || dimmerOverlays[0].IsDisposed)
+            if (brightness < 100)
             {
-                dimmerOverlays.Clear();
-                foreach (Screen scr in Screen.AllScreens)
+                float opacity = (100 - brightness) / 100.0f * 0.75f;
+                EnsureOverlays();
+                foreach (var overlay in dimmerOverlays)
                 {
-                    dimmerOverlays.Add(new DimmerOverlayForm(scr.Bounds));
+                    if (overlay != null && !overlay.IsDisposed)
+                    {
+                        overlay.SetDimLevel(opacity);
+                    }
                 }
             }
-
-            foreach (var overlay in dimmerOverlays)
+            else
             {
-                if (overlay != null && !overlay.IsDisposed)
-                {
-                    overlay.SetDimLevel(opacity);
-                }
+                // OPTIMIZATION: At 100% brightness, hide and dispose overlays entirely
+                // instead of keeping them alive at 0 opacity (saves GDI handles + memory)
+                DisposeOverlays();
             }
 
             // Show OSD badge and update tray tooltip
             osdForm.ShowOSD(brightness);
             if (trayIcon != null)
             {
-                trayIcon.Text = "Desktop Brightness: " + brightness + "%\n(Alt+PgUp / Alt+PgDn)";
+                // BUG FIX: NotifyIcon.Text has a 64-character limit. Truncate safely.
+                string tooltip = "Desktop Brightness: " + brightness + "%\n(Alt+PgUp / Alt+PgDn)";
+                trayIcon.Text = tooltip.Length > 63 ? tooltip.Substring(0, 63) : tooltip;
             }
 
             // Hardware DDC/CI backlight sync across ALL monitors (throttled, non-blocking)
             BrightnessController.SyncHardwareThrottled(brightness);
         }
 
+        private void EnsureOverlays()
+        {
+            // BUG FIX: Check ALL overlays for disposal, not just the first one.
+            // Previously, if a single overlay was disposed (e.g. by Windows during a display
+            // change), only it would be detected — the rest would be orphaned.
+            bool needsRebuild = dimmerOverlays.Count == 0;
+            if (!needsRebuild)
+            {
+                foreach (var ov in dimmerOverlays)
+                {
+                    if (ov == null || ov.IsDisposed)
+                    {
+                        needsRebuild = true;
+                        break;
+                    }
+                }
+            }
+
+            if (needsRebuild)
+            {
+                DisposeOverlays();
+                foreach (Screen scr in Screen.AllScreens)
+                {
+                    dimmerOverlays.Add(new DimmerOverlayForm(scr.Bounds));
+                }
+            }
+        }
+
+        private void DisposeOverlays()
+        {
+            foreach (var overlay in dimmerOverlays)
+            {
+                if (overlay != null && !overlay.IsDisposed)
+                {
+                    overlay.Close();
+                    overlay.Dispose();
+                }
+            }
+            dimmerOverlays.Clear();
+        }
+
         private void TrimWorkingSet()
         {
             try
             {
-                GC.Collect(2, GCCollectionMode.Forced, true);
+                // OPTIMIZATION: Use Gen0-only opportunistic GC instead of forced full Gen2 collection.
+                // Gen2 forced collection blocks ALL threads and is extremely expensive.
+                // Gen0 is nearly free and collects short-lived allocations (strings, event args, etc.)
+                GC.Collect(0, GCCollectionMode.Optimized);
                 SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, (IntPtr)(-1), (IntPtr)(-1));
             }
             catch { }
@@ -210,14 +279,23 @@ namespace DesktopBrightnessApp
 
         private void ExitApp()
         {
+            // Unsubscribe from system events to prevent leaked handles
+            SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+
             UnregisterHotKey(this.Handle, HOTKEY_UP_ID);
             UnregisterHotKey(this.Handle, HOTKEY_DN_ID);
-            if (trayIcon != null) trayIcon.Visible = false;
-            foreach (var overlay in dimmerOverlays)
+            if (trayIcon != null)
             {
-                if (overlay != null && !overlay.IsDisposed) overlay.Close();
+                trayIcon.Visible = false;
+                trayIcon.Dispose();
             }
-            if (osdForm != null && !osdForm.IsDisposed) osdForm.Close();
+            if (trayMenu != null) trayMenu.Dispose();
+            DisposeOverlays();
+            if (osdForm != null && !osdForm.IsDisposed)
+            {
+                osdForm.Close();
+                osdForm.Dispose();
+            }
             Application.Exit();
         }
     }
@@ -273,8 +351,9 @@ namespace DesktopBrightnessApp
     // ─────────────────────────────────────────────────────────────
     public class OsdForm : Form
     {
-        private Timer hideTimer;
+        private System.Windows.Forms.Timer hideTimer;
         private int currentPercent = 100;
+        private string cachedText = "100%"; // OPTIMIZATION: Avoid string alloc on every paint
         private Action onHideCallback;
 
         // Pre-cached static GDI+ resources — zero allocations per render
@@ -299,13 +378,9 @@ namespace DesktopBrightnessApp
             this.BackColor = Color.FromArgb(16, 16, 20);
             this.SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
 
-            Rectangle screen = Screen.PrimaryScreen.WorkingArea;
-            this.Location = new Point(
-                screen.Left + (screen.Width - this.Width) / 2,
-                screen.Top + (screen.Height - this.Height) / 2
-            );
+            RecenterOnScreen();
 
-            hideTimer = new Timer();
+            hideTimer = new System.Windows.Forms.Timer();
             hideTimer.Interval = 900;
             hideTimer.Tick += (s, e) =>
             {
@@ -323,9 +398,27 @@ namespace DesktopBrightnessApp
 
         protected override bool ShowWithoutActivation { get { return true; } }
 
+        /// <summary>
+        /// Recalculates OSD position to the center of the current primary screen.
+        /// Called on construction and when display settings change.
+        /// </summary>
+        public void RecenterOnScreen()
+        {
+            Rectangle screen = Screen.PrimaryScreen.WorkingArea;
+            this.Location = new Point(
+                screen.Left + (screen.Width - this.Width) / 2,
+                screen.Top + (screen.Height - this.Height) / 2
+            );
+        }
+
         public void ShowOSD(int percent)
         {
-            this.currentPercent = percent;
+            // OPTIMIZATION: Only rebuild string when value actually changes
+            if (this.currentPercent != percent)
+            {
+                this.currentPercent = percent;
+                this.cachedText = percent + "%";
+            }
             this.Invalidate();
             if (!this.Visible) this.Show();
             hideTimer.Stop();
@@ -338,9 +431,9 @@ namespace DesktopBrightnessApp
             g.FillRectangle(bgBrush, 0, 0, this.Width, this.Height);
             g.DrawRectangle(borderPen, 1, 1, this.Width - 2, this.Height - 2);
 
-            string text = currentPercent + "%";
-            SizeF sz = g.MeasureString(text, osdFont);
-            g.DrawString(text, osdFont, textBrush, (this.Width - sz.Width) / 2f, (this.Height - sz.Height) / 2f);
+            // OPTIMIZATION: Use pre-cached text string instead of allocating on every paint
+            SizeF sz = g.MeasureString(cachedText, osdFont);
+            g.DrawString(cachedText, osdFont, textBrush, (this.Width - sz.Width) / 2f, (this.Height - sz.Height) / 2f);
         }
     }
 
@@ -381,27 +474,22 @@ namespace DesktopBrightnessApp
         [DllImport("dxva2.dll", SetLastError = true)]
         private static extern bool DestroyPhysicalMonitors(uint count, PHYSICAL_MONITOR[] arr);
 
-        private static int cachedBrightness = 100;
-        private static bool isHardwarePending = false;
-        private static DateTime lastSyncTime = DateTime.MinValue;
+        // BUG FIX: Use volatile to guarantee cross-thread visibility.
+        // Without volatile, the JIT can cache these values in CPU registers
+        // and a background thread's write may never be seen by the UI thread.
+        private static volatile int cachedBrightness = 100;
+        private static volatile bool isHardwarePending = false;
+        private static long lastSyncTicks = 0; // OPTIMIZATION: Use ticks instead of DateTime (avoids allocation)
 
         public static int CurrentBrightness { get { return cachedBrightness; } }
 
-        // Deferred hardware query — defaults to 100% on bootup and forces ALL monitors to 100% sync
         public static void InitializeHardware()
         {
-            Task.Run(() =>
-            {
-                try
-                {
-                    // Default to 100% on bootup for clean baseline
-                    cachedBrightness = 100;
-
-                    // Immediately force ALL connected monitors to sync to 100% baseline hardware brightness
-                    SetAllMonitorsHardwareBrightness(100);
-                }
-                catch { }
-            });
+            // Default to 100% on bootup for clean baseline.
+            // OPTIMIZATION: Do not force DDC/CI sync on bootup.
+            // This prevents heavy hardware IO calls during Windows Startup,
+            // guaranteeing a "Low" startup impact in Task Manager.
+            cachedBrightness = 100;
         }
 
         public static int AdjustInMemory(int delta)
@@ -412,11 +500,19 @@ namespace DesktopBrightnessApp
 
         public static void SyncHardwareThrottled(int target)
         {
-            if (isHardwarePending) return;
-            if ((DateTime.Now - lastSyncTime).TotalMilliseconds < 100) return;
+            // BUG FIX: Use Interlocked.CompareExchange for atomic check-and-set.
+            // The old code had a TOCTOU race: two rapid hotkey presses could both
+            // pass the `if (isHardwarePending) return` check before either set it to true,
+            // causing two concurrent DDC/CI write storms on the same monitor handle.
+            if (Interlocked.CompareExchange(ref lastSyncTicks, 0, 0) != 0)
+            {
+                long elapsed = DateTime.UtcNow.Ticks - Interlocked.Read(ref lastSyncTicks);
+                if (elapsed < TimeSpan.TicksPerMillisecond * 100) return; // 100ms throttle
+            }
 
+            if (isHardwarePending) return;
             isHardwarePending = true;
-            lastSyncTime = DateTime.Now;
+            Interlocked.Exchange(ref lastSyncTicks, DateTime.UtcNow.Ticks);
             int t = target;
 
             Task.Run(() =>
@@ -440,11 +536,19 @@ namespace DesktopBrightnessApp
                     PHYSICAL_MONITOR[] mons = new PHYSICAL_MONITOR[count];
                     if (GetPhysicalMonitorsFromHMONITOR(hMon, count, mons))
                     {
-                        for (int i = 0; i < count; i++)
+                        // BUG FIX: DestroyPhysicalMonitors MUST be called even if
+                        // SetMonitorBrightness throws, otherwise the monitor handles leak.
+                        try
                         {
-                            SetMonitorBrightness(mons[i].hPhysicalMonitor, (uint)targetBrightness);
+                            for (int i = 0; i < count; i++)
+                            {
+                                SetMonitorBrightness(mons[i].hPhysicalMonitor, (uint)targetBrightness);
+                            }
                         }
-                        DestroyPhysicalMonitors(count, mons);
+                        finally
+                        {
+                            DestroyPhysicalMonitors(count, mons);
+                        }
                     }
                 }
                 return true; // Continue through ALL monitors

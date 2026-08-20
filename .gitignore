@@ -1,15 +1,15 @@
-# Executables
+# Build output
 *.exe
 *.dll
+*.obj
+*.o
 
-# Temporary dumps & logs
-*.txt
+# Logs & scratch
 *.log
-*.ps1
-!build_brightness_app.ps1
 
-# System & IDE
+# IDE / editor
 .vs/
+.vscode/
 bin/
 obj/
 *.user

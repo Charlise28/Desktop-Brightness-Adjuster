@@ -1,4 +1,4 @@
-# Builds the native Win32 DesktopBrightness.exe with LLVM-MinGW.
+# Builds the native Win32 DesktopBrightness.exe with LLVM-MinGW (or any MinGW gcc).
 #
 # -Os          optimize for size (this is a tray utility, not a hot loop)
 # -mwindows    GUI subsystem, no console window
@@ -8,13 +8,18 @@
 
 $ErrorActionPreference = 'Stop'
 
-$mingwRoot = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\llvm-mingw-20260616-ucrt-x86_64\bin"
-$gcc = Join-Path $mingwRoot 'gcc.exe'
-
-if (-not (Test-Path $gcc)) {
-    # Fall back to whatever gcc is on PATH
+# Prefer an LLVM-MinGW installed by winget (any version), then any gcc on PATH.
+$gcc = $null
+$wingetPkgs = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+if (Test-Path $wingetPkgs) {
+    $gcc = Get-ChildItem -Path $wingetPkgs -Filter 'gcc.exe' -Recurse -ErrorAction SilentlyContinue |
+           Where-Object { $_.FullName -match 'llvm-mingw' } |
+           Sort-Object FullName -Descending |
+           Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $gcc) {
     $onPath = Get-Command gcc -ErrorAction SilentlyContinue
-    if ($onPath) { $gcc = $onPath.Source } else { throw "gcc not found. Install LLVM-MinGW or put gcc on PATH." }
+    if ($onPath) { $gcc = $onPath.Source } else { throw "gcc not found. Install LLVM-MinGW (winget install MartinStorsjo.LLVM-MinGW.UCRT) or put gcc on PATH." }
 }
 
 $srcFile = Join-Path $PSScriptRoot 'DesktopBrightness.c'
@@ -39,7 +44,7 @@ $compilerArgs = @(
     '-ladvapi32'
 )
 
-Write-Host "Compiling $srcFile ..."
+Write-Host "Compiling $srcFile with $gcc ..."
 & $gcc @compilerArgs
 
 if ($LASTEXITCODE -eq 0) {
